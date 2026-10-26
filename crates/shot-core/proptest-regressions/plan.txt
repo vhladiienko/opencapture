@@ -5,3 +5,5 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc e28b8f9da3a37d2fdbae430f9536066e1aa256348985d777e6119a274b6c230c # shrinks to dpr = 1.0, n = 3, viewport_css = 1269.542137753665, noise = [0.0, 0.0, 0.0]
+cc 0dbf6617d278ffcf3d82fd62f56c742f6f459757b04fdbf4a55efc63a4b44a02 # shrinks to total = 36305.73491042068, viewport = 1.0, dpr = 1.25
+cc d95837998d7b7fd1a5dbc063de07ef608abcb914411c3450b4b4c97834483949 # shrinks to total = 196889.8172029782, viewport = 1737.4493266585391, dpr = 1.25

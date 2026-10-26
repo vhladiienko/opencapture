@@ -1,0 +1,38 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>devgrid</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      // Absolute-device-row encoder: every device row of the page carries its
+      // own index as a gray level, drawn on a canvas whose backing store is
+      // exactly the device grid. The stitched capture should reproduce
+      // value(row) = 40 + ((row*13) % 176) at every output row; any
+      // duplicated, dropped, or blended row is a seam defect.
+      const PAGE_W = 800;
+      const PAGE_H = 2400;
+      const dpr = window.devicePixelRatio;
+      const cv = document.createElement("canvas");
+      cv.width = Math.round(PAGE_W * dpr);
+      cv.height = Math.round(PAGE_H * dpr);
+      cv.style.width = PAGE_W + "px";
+      cv.style.height = PAGE_H + "px";
+      document.body.appendChild(cv);
+      const ctx = cv.getContext("2d");
+      for (let r = 0; r < cv.height; r++) {
+        const v = 40 + ((r * 13) % 176);
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(0, r, cv.width, 1);
+      }
+    </script>
+  </body>
+</html>

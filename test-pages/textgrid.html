@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>textgrid</title>
+    <style>
+      html, body { margin: 0; padding: 0; }
+      #wrap { position: relative; width: 800px; }
+      #grid { display: block; }
+      #textcol {
+        position: absolute; left: 200px; top: 0; width: 400px;
+        font: 14px/24px Georgia, serif; color: #111;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="wrap">
+      <canvas id="grid"></canvas>
+      <div id="textcol"></div>
+    </div>
+    <script>
+      // Device-grid canvas (absolute device-row encoding, same as devgrid)
+      // with realistic subpixel-rendered text composited on top: the grid
+      // column at x<200 catches geometric shifts, the text column catches
+      // raster/AA tone changes between slices.
+      const PAGE_W = 800, PAGE_H = 9000;
+      const dpr = window.devicePixelRatio;
+      const cv = document.getElementById("grid");
+      cv.width = Math.round(PAGE_W * dpr);
+      cv.height = Math.round(PAGE_H * dpr);
+      cv.style.width = PAGE_W + "px";
+      cv.style.height = PAGE_H + "px";
+      const ctx = cv.getContext("2d");
+      for (let r = 0; r < cv.height; r++) {
+        const v = 200 + ((r * 13) % 40); // light gray band, 200..239
+        ctx.fillStyle = `rgb(${v},${v},${v})`;
+        ctx.fillRect(0, r, cv.width, 1);
+      }
+      // Text: 9000px / 24px lines of real prose.
+      const col = document.getElementById("textcol");
+      let words = "the quick brown fox jumps over the lazy dog while brilliant silver clouds drift across a pale afternoon sky and distant bells echo through narrow cobblestone streets ".split(" ");
+      let para = document.createElement("p");
+      for (let i = 0; i < 2600; i++) {
+        para.append(words[i % words.length] + " ");
+        if (i % 60 === 59) { col.append(para); para = document.createElement("p"); }
+      }
+      col.append(para);
+    </script>
+  </body>
+</html>

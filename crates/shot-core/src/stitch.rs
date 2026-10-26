@@ -1,7 +1,12 @@
 //! Decodes captured PNG slices, resolves their placement via [`crate::plan`],
 //! and composites the result into one or more bounded-size RGBA segments
-//! (bounded by [`crate::plan::MAX_CANVAS_AREA_PX`]) ready for
-//! [`crate::encode`].
+//! (bounded by [`crate::plan::MAX_CANVAS_AREA_PX`]), encoded straight to PNG.
+//!
+//! Memory is bounded by streaming: slices are decoded one segment-range at a
+//! time and each segment is encoded as soon as it is composited. A long
+//! capture at a fractional device scale is easily 2+ GB of decoded pixels —
+//! holding every decoded slice and every finished segment at once crossed
+//! wasm's 4GB line and trapped the worker mid-capture.
 
 use crate::error::StitchError;
 use crate::plan::{self, SliceObservation};
@@ -74,55 +79,92 @@ pub fn decode_png_rgba(bytes: &[u8]) -> Result<DecodedSlice, String> {
 
 /// Decode every slice, resolve placement, and composite into bounded-size
 /// segments. `slices` must be in scroll order (top of page first).
-pub fn build_segments(
+/// Width and height from a PNG's IHDR — header chunks only, no pixel decode.
+/// Placement needs every slice's dimensions, and a long capture's *pixels*
+/// are exactly what must not be materialized all at once.
+fn png_dimensions(bytes: &[u8]) -> Result<(u32, u32), String> {
+    let decoder = png::Decoder::new(bytes);
+    let reader = decoder.read_info().map_err(|e| e.to_string())?;
+    Ok((reader.info().width, reader.info().height))
+}
+
+/// Stitch every captured slice into one or more bounded-size output PNGs,
+/// streaming: no more than one segment's pixels and one segment-range's
+/// worth of decoded slices are alive at any moment. Returns the placement
+/// plan (for the report) and the encoded PNGs in scroll order.
+pub fn stitch_encoded(
     dpr: f64,
     slices: &[CapturedSlice],
-) -> Result<(crate::types::StitchPlan, Vec<Segment>), StitchError> {
+) -> Result<(crate::types::StitchPlan, Vec<crate::types::EncodedImage>), StitchError> {
     if slices.is_empty() {
         return Err(StitchError::Plan(crate::error::PlanError::NoObservations));
     }
 
-    let mut decoded = Vec::with_capacity(slices.len());
-    for (i, s) in slices.iter().enumerate() {
-        let d = decode_png_rgba(&s.png_bytes).map_err(|message| StitchError::Decode {
-            slice_index: i,
-            message,
-        })?;
-        decoded.push(d);
-    }
-
-    let session_width = decoded[0].width;
-    for (i, d) in decoded.iter().enumerate() {
-        if d.width != session_width {
-            return Err(StitchError::WidthMismatch {
-                slice_index: i,
-                expected: session_width,
-                actual: d.width,
-            });
-        }
-    }
-
-    let observations: Vec<SliceObservation> = slices
+    let dims: Vec<(u32, u32)> = slices
         .iter()
-        .zip(decoded.iter())
-        .map(|(s, d)| SliceObservation {
+        .enumerate()
+        .map(|(i, s)| {
+            png_dimensions(&s.png_bytes).map_err(|message| StitchError::Decode { slice_index: i, message })
+        })
+        .collect::<Result<_, _>>()?;
+    let session_width = dims[0].0;
+    if let Some((i, &(_, _))) = dims
+        .iter()
+        .enumerate()
+        .find(|(i, (w, _))| *i > 0 && *w != session_width)
+    {
+        return Err(StitchError::WidthMismatch {
+            slice_index: i,
+            expected: session_width,
+            actual: dims[i].0,
+        });
+    }
+
+    let observations: Vec<SliceObservation> = dims
+        .iter()
+        .zip(slices.iter())
+        .map(|((width, height), s)| SliceObservation {
             actual_scroll_css: s.actual_scroll_css,
-            bitmap_height_dev: d.height,
-            bitmap_width_dev: d.width,
+            bitmap_height_dev: *height,
+            bitmap_width_dev: *width,
         })
         .collect();
 
     let stitch_plan = plan::place_slices(dpr, &observations)?;
     let ranges = plan::split_ranges(stitch_plan.canvas_height_dev, stitch_plan.canvas_width_dev);
 
-    let width = stitch_plan.canvas_width_dev as usize;
-    let mut segments = Vec::with_capacity(ranges.len());
+    let row_bytes = stitch_plan.canvas_width_dev as usize * 4;
+    let mut images = Vec::with_capacity(ranges.len());
+    // Decoded slices for the current range. Each range decodes only the
+    // slices it overlaps and drops them when the range is done; the cache
+    // carries at most the one slice that straddles into the next range.
+    let mut decoded: Vec<(usize, DecodedSlice)> = Vec::new();
 
     for range in &ranges {
-        let height = range.height() as usize;
-        let mut rgba = vec![0u8; width * height * 4];
+        let needed: Vec<&crate::types::Placement> = stitch_plan
+            .placements
+            .iter()
+            .filter(|p| {
+                let p_start = p.canvas_y_dev;
+                let p_end = p.canvas_y_dev + p.rows_dev;
+                p_start < range.end_dev && p_end > range.start_dev
+            })
+            .collect();
 
-        for placement in &stitch_plan.placements {
+        decoded.retain(|(index, _)| needed.iter().any(|p| p.slice_index == *index));
+        for p in &needed {
+            if !decoded.iter().any(|(index, _)| index == &p.slice_index) {
+                let data = decode_png_rgba(&slices[p.slice_index].png_bytes).map_err(|message| {
+                    StitchError::Decode { slice_index: p.slice_index, message }
+                })?;
+                decoded.push((p.slice_index, data));
+            }
+        }
+
+        let height = range.height() as usize;
+        let mut rgba = vec![0u8; row_bytes * height];
+
+        for placement in &needed {
             let p_start = placement.canvas_y_dev;
             let p_end = placement.canvas_y_dev + placement.rows_dev;
             let overlap_start = p_start.max(range.start_dev);
@@ -131,12 +173,14 @@ pub fn build_segments(
                 continue;
             }
 
-            let src = &decoded[placement.slice_index];
+            let (_, src) = decoded
+                .iter()
+                .find(|(index, _)| index == &placement.slice_index)
+                .expect("placement slice decoded above");
             let src_row_start = placement.crop_top_dev + (overlap_start - p_start);
             let dst_row_start = overlap_start - range.start_dev;
             let n_rows = overlap_end - overlap_start;
 
-            let row_bytes = width * 4;
             for r in 0..n_rows {
                 let src_off = (src_row_start + r) as usize * row_bytes;
                 let dst_off = (dst_row_start + r) as usize * row_bytes;
@@ -145,14 +189,15 @@ pub fn build_segments(
             }
         }
 
-        segments.push(Segment {
+        let segment = Segment {
             width_dev: stitch_plan.canvas_width_dev,
             height_dev: range.height(),
             rgba,
-        });
+        };
+        images.push(crate::encode::encode_png(&segment, dpr)?);
     }
 
-    Ok((stitch_plan, segments))
+    Ok((stitch_plan, images))
 }
 
 #[cfg(test)]
@@ -222,9 +267,9 @@ mod tests {
     }
 
     #[test]
-    fn build_segments_stitches_two_slices_without_duplicated_rows() {
+    fn stitch_encoded_stitches_two_slices_without_duplicated_rows() {
         // Two 4x4 slices, second scrolled down by exactly its own height:
-        // expect one 4x8 segment where row-index encoding is exactly 0..8,
+        // expect one 4x8 output PNG where row-index encoding is exactly 0..8,
         // no duplicated or skipped row values.
         let slice0 = encode_row_indexed_png(4, 4, 0);
         let slice1 = encode_row_indexed_png(4, 4, 4);
@@ -238,11 +283,11 @@ mod tests {
                 png_bytes: slice1,
             },
         ];
-        let (stitch_plan, segments) = build_segments(1.0, &slices).unwrap();
+        let (stitch_plan, images) = stitch_encoded(1.0, &slices).unwrap();
         assert_eq!(stitch_plan.canvas_height_dev, 8);
-        assert_eq!(segments.len(), 1);
-        let seg = &segments[0];
-        assert_eq!(seg.height_dev, 8);
+        assert_eq!(images.len(), 1);
+        let seg = decode_png_rgba(&images[0].png_bytes).unwrap();
+        assert_eq!(seg.height, 8);
         for row in 0..8u32 {
             let off = (row * 4 * 4) as usize;
             assert_eq!(seg.rgba[off], row as u8, "row {row} has wrong value");
@@ -250,7 +295,7 @@ mod tests {
     }
 
     #[test]
-    fn build_segments_crops_overlap_without_duplicating_rows() {
+    fn stitch_encoded_crops_overlap_without_duplicating_rows() {
         // slice0 covers rows [0,4) (values 0..4). slice1 requested to start
         // at row 2 (overlap of 2 rows) but its own content is rows [2,6)
         // (values 2..6) — after cropping, output should be exactly 0..6
@@ -267,9 +312,9 @@ mod tests {
                 png_bytes: slice1,
             },
         ];
-        let (stitch_plan, segments) = build_segments(1.0, &slices).unwrap();
+        let (stitch_plan, images) = stitch_encoded(1.0, &slices).unwrap();
         assert_eq!(stitch_plan.canvas_height_dev, 6);
-        let seg = &segments[0];
+        let seg = decode_png_rgba(&images[0].png_bytes).unwrap();
         for row in 0..6u32 {
             let off = (row * 2 * 4) as usize;
             assert_eq!(seg.rgba[off], row as u8, "row {row} has wrong value");
@@ -277,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn build_segments_rejects_width_mismatch() {
+    fn stitch_encoded_rejects_width_mismatch() {
         let slice0 = encode_solid_png(4, 4, [1, 1, 1, 255]);
         let slice1 = encode_solid_png(5, 4, [1, 1, 1, 255]);
         let slices = vec![
@@ -290,7 +335,7 @@ mod tests {
                 png_bytes: slice1,
             },
         ];
-        let err = build_segments(1.0, &slices).unwrap_err();
+        let err = stitch_encoded(1.0, &slices).unwrap_err();
         match err {
             StitchError::WidthMismatch {
                 slice_index,
@@ -306,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn build_segments_splits_tall_output_into_multiple_segments() {
+    fn stitch_encoded_splits_tall_output_into_multiple_segments() {
         // A narrow width keeps MAX_CANVAS_DIMENSION_PX (not the area
         // budget) the binding constraint, so one row past it forces a
         // 2-way split while keeping the encoded buffer tiny — the area
@@ -319,26 +364,23 @@ mod tests {
             actual_scroll_css: 0.0,
             png_bytes: slice0,
         }];
-        let (stitch_plan, segments) = build_segments(1.0, &slices).unwrap();
+        let (stitch_plan, images) = stitch_encoded(1.0, &slices).unwrap();
         assert_eq!(stitch_plan.canvas_height_dev, height);
         assert!(
-            segments.len() > 1,
+            images.len() > 1,
             "expected split into multiple segments, got {}",
-            segments.len()
+            images.len()
         );
-        let total_rows: u32 = segments.iter().map(|s| s.height_dev).sum();
+        let segs: Vec<DecodedSlice> = images
+            .iter()
+            .map(|img| decode_png_rgba(&img.png_bytes).unwrap())
+            .collect();
+        let total_rows: u32 = segs.iter().map(|s| s.height).sum();
         assert_eq!(total_rows, height);
         // Verify row order is preserved across the segment boundary: last
         // row of segment 0 and first row of segment 1 are adjacent values.
-        let seg0_last_off = ((segments[0].height_dev - 1) * width * 4) as usize;
-        let seg1_first_off = 0usize;
-        assert_eq!(
-            segments[0].rgba[seg0_last_off],
-            (segments[0].height_dev - 1) as u8
-        );
-        assert_eq!(
-            segments[1].rgba[seg1_first_off],
-            segments[0].height_dev as u8
-        );
+        let seg0_last_off = ((segs[0].height - 1) * width * 4) as usize;
+        assert_eq!(segs[0].rgba[seg0_last_off], (segs[0].height - 1) as u8);
+        assert_eq!(segs[1].rgba[0], segs[0].height as u8);
     }
 }

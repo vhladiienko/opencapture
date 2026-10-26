@@ -1,6 +1,6 @@
 //! Multi-page PDF export: one page per [`crate::types::EncodedImage`]
 //! (already split to fit output-image size limits by
-//! [`crate::stitch::build_segments`]), each page sized in points to match
+//! [`crate::stitch::stitch_encoded`]), each page sized in points to match
 //! the image's CSS pixel dimensions so the PDF prints at 1:1 physical size.
 
 use pdf_writer::{Content, Filter, Finish, Name, Pdf, Rect, Ref};

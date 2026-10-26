@@ -41,7 +41,7 @@ test.beforeAll(() => {
 test("extension loads: service worker starts and wasm module initializes", async ({ serviceWorker }) => {
   const targets = await serviceWorker.evaluate(async () => {
     // @ts-expect-error test-only global, see background/index.ts
-    return globalThis.__test.scrollTargets(3000, 720);
+    return globalThis.__test.scrollTargets(3000, 720, 1);
   });
   expect(targets[0]).toBe(0);
   expect(targets[targets.length - 1]! + 720).toBeGreaterThanOrEqual(3000);

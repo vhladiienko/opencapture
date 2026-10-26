@@ -14,14 +14,15 @@ fn to_js_err(e: impl std::fmt::Display) -> JsValue {
 }
 
 /// Scroll positions (CSS px) the content script should visit to cover the
-/// full page height, given the viewport height and total page height
-/// measured during the prep phase.
+/// full page height, given the viewport height, total page height measured
+/// during the prep phase, and the device pixel ratio the steps must land on.
 #[wasm_bindgen(js_name = scrollTargets)]
 pub fn scroll_targets_js(
     total_height_css: f64,
     viewport_height_css: f64,
+    dpr: f64,
 ) -> Result<Vec<f64>, JsValue> {
-    crate::plan::scroll_targets(total_height_css, viewport_height_css).map_err(to_js_err)
+    crate::plan::scroll_targets(total_height_css, viewport_height_css, dpr).map_err(to_js_err)
 }
 
 /// Crops a single captured PNG to a device-pixel rectangle and re-encodes
@@ -177,9 +178,8 @@ impl CaptureSession {
     pub fn finish(&mut self, options_json: &str) -> Result<JsValue, JsValue> {
         let options: FinishOptions = serde_json::from_str(options_json).map_err(to_js_err)?;
 
-        let (stitch_plan, segments) =
-            crate::stitch::build_segments(self.dpr, &self.slices).map_err(to_js_err)?;
-        let images = crate::encode::encode_segments(&segments, self.dpr).map_err(to_js_err)?;
+        let (stitch_plan, images) =
+            crate::stitch::stitch_encoded(self.dpr, &self.slices).map_err(to_js_err)?;
 
         let report = CaptureReport {
             css_width: stitch_plan.canvas_width_dev as f64 / self.dpr,

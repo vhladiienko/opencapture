@@ -1,7 +1,8 @@
 //! Pure geometry: no image bytes, no browser types. Two responsibilities:
 //!
 //! 1. [`scroll_targets`] — what scroll positions the content script should
-//!    *request*, computed once from page metrics.
+//!    *request*, computed once from page metrics, quantized to whole device
+//!    pixels so the browser's rendered scroll always matches placement.
 //! 2. [`place_slices`] — where each captured slice's rows actually land in
 //!    the output canvas, computed from what the browser *actually* reported
 //!    scrolling to (which may differ from the request at the last slice, or
@@ -24,12 +25,28 @@ pub fn to_device_px(css_px: f64, dpr: f64) -> u32 {
 
 /// Scroll positions (in CSS px, measured from the top) the content script
 /// should visit to cover the full page height with the given viewport
-/// height. Always starts at 0.0; the last target is clamped so the final
-/// viewport-sized capture doesn't scroll past the bottom of the page.
+/// height, at the given device pixel ratio. Always starts at 0.0; the last
+/// target is clamped so the final viewport-sized capture doesn't scroll
+/// past the bottom of the page.
+///
+/// Steps and the final clamp are quantized to whole device pixels. A step
+/// whose `step * dpr` is fractional (Windows at 125% scaling, browser zoom,
+/// a window whose chrome eats part of its nominal height) makes the browser
+/// render each frame snapped to a device row one off from the row the
+/// stitcher computes for it — and since slices are chained bottom-to-top,
+/// every seam after the first shifts by that row until the final slice
+/// re-anchors, duplicating it back. On real content that reads as a faint
+/// 2px dark/light line at each seam. Whole-device-row steps make the
+/// rendered scroll, the captured bitmap, and the computed placement agree
+/// exactly, so no seam carries the discrepancy.
 pub fn scroll_targets(
     total_height_css: f64,
     viewport_height_css: f64,
+    dpr: f64,
 ) -> Result<Vec<f64>, PlanError> {
+    if !dpr.is_finite() || dpr <= 0.0 {
+        return Err(PlanError::InvalidDpr);
+    }
     if !viewport_height_css.is_finite() || viewport_height_css <= 0.0 {
         return Err(PlanError::InvalidViewport);
     }
@@ -41,24 +58,39 @@ pub fn scroll_targets(
         return Ok(vec![0.0]);
     }
 
+    // Largest whole-device-row step that does not exceed the viewport. A
+    // viewport smaller than one device row cannot be quantized — step by
+    // the raw height rather than by zero.
+    let step_css = match (viewport_height_css * dpr).floor() / dpr {
+        step if step > 0.0 => step,
+        _ => viewport_height_css,
+    };
     let max_scroll = total_height_css - viewport_height_css;
-    let mut targets = Vec::new();
-    let mut y = 0.0_f64;
-    // Bound the loop independently of float step accumulation: the page
-    // cannot need more slices than its height divided by viewport height,
-    // plus a small margin for the final clamp.
-    let max_slices = (total_height_css / viewport_height_css).ceil() as usize + 2;
+    // Whole-device-row position for the bottom-clamped final slice. Rounding
+    // (not flooring) mirrors the snap the browser applies to the same spot,
+    // so the requested position is the rendered one.
+    let final_css = (max_scroll * dpr).round() / dpr;
+    // The step can be slightly smaller than the viewport (that is what
+    // quantizing does), so the bound divides by the step, not the viewport
+    // height, and +2 covers the final clamp.
+    let max_slices = (total_height_css / step_css).ceil() as usize + 2;
 
-    for _ in 0..max_slices {
+    let mut targets = Vec::with_capacity(max_slices + 1);
+    // Index-multiply, not repeated addition: after tens of thousands of
+    // steps the accumulated rounding error would drift the target off the
+    // device grid it is supposed to be quantized to.
+    for i in 0..=max_slices {
+        let y = (i as f64 * step_css).min(final_css);
+        match targets.last() {
+            // Clamped: the step grid does not land past the bottom, so every
+            // further index would repeat the final position.
+            Some(&last) if y <= last => break,
+            _ => {}
+        }
         targets.push(y);
         if y >= max_scroll {
             break;
         }
-        y = (y + viewport_height_css).min(max_scroll);
-    }
-
-    if *targets.last().unwrap() < max_scroll {
-        targets.push(max_scroll);
     }
 
     Ok(targets)
@@ -174,7 +206,7 @@ pub fn place_slices(dpr: f64, observations: &[SliceObservation]) -> Result<Stitc
 /// extension's `editor/canvas-limit.ts`.
 pub const MAX_CANVAS_DIMENSION_PX: u32 = 30_000;
 /// Segment-area budget: bounds how large a single in-memory RGBA buffer
-/// `stitch::build_segments` will ever materialize (`area * 4` bytes) and
+/// `stitch::stitch_encoded` will ever materialize (`area * 4` bytes) and
 /// the editor's on-screen canvas pixel count, with a safety margin below
 /// Chrome's real 268,435,456px area ceiling (100M px -> 400MB RGBA worst
 /// case, comfortable for a one-shot background-service-worker task).
@@ -217,27 +249,59 @@ mod tests {
 
     #[test]
     fn scroll_targets_short_page_is_single_slice() {
-        let targets = scroll_targets(500.0, 900.0).unwrap();
+        let targets = scroll_targets(500.0, 900.0, 1.0).unwrap();
         assert_eq!(targets, vec![0.0]);
     }
 
     #[test]
     fn scroll_targets_exact_multiple() {
-        let targets = scroll_targets(1800.0, 900.0).unwrap();
+        let targets = scroll_targets(1800.0, 900.0, 1.0).unwrap();
         assert_eq!(targets, vec![0.0, 900.0]);
     }
 
     #[test]
     fn scroll_targets_rejects_bad_input() {
-        assert_eq!(scroll_targets(100.0, 0.0), Err(PlanError::InvalidViewport));
+        assert_eq!(scroll_targets(100.0, 0.0, 1.0), Err(PlanError::InvalidViewport));
         assert_eq!(
-            scroll_targets(-1.0, 100.0),
+            scroll_targets(-1.0, 100.0, 1.0),
             Err(PlanError::InvalidTotalHeight)
         );
         assert_eq!(
-            scroll_targets(f64::NAN, 100.0),
+            scroll_targets(f64::NAN, 100.0, 1.0),
             Err(PlanError::InvalidTotalHeight)
         );
+        assert_eq!(scroll_targets(100.0, 100.0, 0.0), Err(PlanError::InvalidDpr));
+        assert_eq!(scroll_targets(100.0, 100.0, f64::NAN), Err(PlanError::InvalidDpr));
+    }
+
+    #[test]
+    fn scroll_targets_steps_land_on_whole_device_rows() {
+        // Regression: headless window chrome makes the viewport 634 CSS px at
+        // dpr 1.25, so the unquantized step (634 * 1.25 = 792.5 device rows)
+        // is fractional. The browser snaps each frame to a device row one
+        // off from the row the stitcher computes, and every seam after the
+        // first carries a shifted band that reads as a faint 2px line on
+        // real pages.
+        let targets = scroll_targets(2404.0, 634.0, 1.25).unwrap();
+        assert!(targets.len() > 1);
+        for (i, t) in targets.iter().enumerate() {
+            let dev = t * 1.25;
+            assert!(dev.fract().abs() < 1e-9, "target {i} ({t}) is {dev} device rows");
+        }
+        // Steps are the quantized viewport (792 device rows = 633.6 CSS px),
+        // not the raw viewport.
+        assert_eq!(targets[1], 633.6);
+        // The final target is the bottom clamp, also on the device grid.
+        let last = *targets.last().unwrap();
+        assert_eq!(last, (1770.0f64 * 1.25).round() / 1.25);
+    }
+
+    #[test]
+    fn scroll_targets_integer_dpr_is_unchanged() {
+        // Quantization must be a no-op whenever the viewport already maps to
+        // whole device rows — every pre-existing capture geometry.
+        assert_eq!(scroll_targets(3000.0, 720.0, 1.0).unwrap(), vec![0.0, 720.0, 1440.0, 2160.0, 2280.0]);
+        assert_eq!(scroll_targets(2404.0, 634.0, 2.0).unwrap(), vec![0.0, 634.0, 1268.0, 1770.0]);
     }
 
     #[test]
@@ -368,8 +432,9 @@ mod tests {
         fn prop_scroll_targets_cover_page(
             total in 0.0f64..200_000.0,
             viewport in 1.0f64..5000.0,
+            dpr in prop_oneof![Just(1.0), Just(1.25), Just(1.5), Just(2.0), Just(3.0)],
         ) {
-            let targets = scroll_targets(total, viewport).unwrap();
+            let targets = scroll_targets(total, viewport, dpr).unwrap();
             prop_assert!(!targets.is_empty());
             prop_assert_eq!(targets[0], 0.0);
             // strictly increasing (no duplicate/backwards targets)
@@ -377,17 +442,27 @@ mod tests {
                 prop_assert!(w[1] > w[0]);
             }
             // every target stays within [0, total]; last slice + viewport
-            // reaches (or exceeds, for a short page) the bottom.
+            // reaches (or exceeds, for a short page) the bottom. The bottom
+            // tolerance covers the device-row quantization: the final slice
+            // may sit up to half a device row above the true max scroll.
             for &t in &targets {
                 prop_assert!(t >= 0.0);
-                prop_assert!(t <= total + 1e-6);
+                prop_assert!(t <= total + 0.5 / dpr + 1e-6);
             }
             let last = *targets.last().unwrap();
-            prop_assert!(last + viewport >= total - 1e-6);
+            prop_assert!(last + viewport >= total - 0.5 / dpr - 1e-6);
             // no step skips content: consecutive targets are at most one
             // viewport-height apart.
             for w in targets.windows(2) {
                 prop_assert!(w[1] - w[0] <= viewport + 1e-6);
+            }
+            // every target lands on a whole device row — the seam invariant
+            // the quantization exists for. Distance-to-nearest-integer, not
+            // fract(): a large target can sit one ulp below an integer,
+            // which fracts to ~1.0.
+            for &t in &targets {
+                let dev = t * dpr;
+                prop_assert!((dev - dev.round()).abs() < 1e-6);
             }
         }
 
