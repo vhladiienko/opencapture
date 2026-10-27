@@ -181,6 +181,70 @@ test("full-page capture on a page with an inner scroller captures its full conte
   await page.close();
 });
 
+test("full-page capture survives a pinned overlay whose selector matches a shared framework base class", async ({
+  context,
+  serviceWorker,
+}) => {
+  // react-native-web apps (tappytoon.com's reader, among others) put one
+  // base class on every View. A loading-spinner overlay — fixed, outside
+  // the scrolling pane, classed only with that base — is correctly
+  // classified as pinned and hidden, but the stylesheet rule that backs
+  // the inline hiding up against element rebuilds was written from the
+  // same selector: `div.<base>`, which matches the entire application.
+  // Every slice then photographed a hidden page and the stitched capture
+  // came back blank. The scroller here (rnw-shared-class-overlay.html)
+  // has that shape; the capture can only come out right if the rule was
+  // proven as narrow as the inline hiding it backs up.
+  const page = await context.newPage();
+  await page.setViewportSize({ width: 800, height: 600 });
+  await page.goto(`${BASE_URL}/rnw-shared-class-overlay.html`);
+
+  const tabId = await serviceWorker.evaluate(async (url) => {
+    const tabs = await chrome.tabs.query({});
+    const tab = tabs.find((t) => t.url === url);
+    if (!tab?.id) throw new Error(`no tab found for ${url}; open tabs: ${JSON.stringify(tabs.map((t) => t.url))}`);
+    return { tabId: tab.id, windowId: tab.windowId };
+  }, page.url());
+
+  const result = await serviceWorker.evaluate(
+    async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureFullPage(tabId, windowId);
+    },
+    { tabId: tabId.tabId, windowId: tabId.windowId },
+  );
+
+  // Same geometry as inner-scroll.html, same expectations: 2000px of inner
+  // content plus the 80px outer header, kept once at the top.
+  expect(result.report.output_height_px).toBe(2080);
+  expect(result.report.output_width_px).toBe(800);
+  expect(result.report.warnings).toContain("Captured an inner scrolling area on this page instead of the full window.");
+
+  const dir = mkdtempSync(join(tmpdir(), "opencapture-e2e-"));
+  const pngPath = writeBase64Png(dir, "rnw-shared-class-overlay.png", result.imagesBase64[0]);
+
+  const info = JSON.parse(shotQa(["png-info", pngPath]).stdout);
+  expect(info.width).toBe(800);
+  expect(info.height).toBe(2080);
+
+  // All 20 inner bands at their exact rows and colors: with the
+  // overmatching rule left in place this fails on band 0, because every
+  // element — bands included — carried the rule and the whole capture was
+  // photographed blank.
+  const bandSample = shotQa(["band-sample", pngPath, "--bands", "20", "--band-height", "100", "--x", "10", "--y-offset", "130"]);
+  expect(bandSample.code).toBe(0);
+  const bands = JSON.parse(bandSample.stdout) as Array<{ band: number; r: number; g: number; b: number }>;
+  expect(bands.length).toBe(20);
+  for (const band of bands) {
+    const expectedR = (band.band * 53) % 256;
+    const expectedG = (band.band * 97) % 256;
+    const expectedB = (band.band * 151) % 256;
+    expect(band, `band ${band.band}`).toMatchObject({ r: expectedR, g: expectedG, b: expectedB });
+  }
+
+  await page.close();
+});
+
 test("capturing the same tab twice without a reload doesn't throw a content-script re-injection SyntaxError", async ({
   context,
   serviceWorker,
