@@ -96,12 +96,20 @@ export function classifyPinned(opts: {
     // a sticky sliver inside the scroller travels with the content and is
     // part of it.
     const viewBottom0 = view.top + view.height;
+    const boxBottom = box.top + box.height;
+    const visibleHeight = Math.min(boxBottom, viewBottom0) - Math.max(box.top, view.top);
+    const edgeDistance = Math.min(
+      Math.abs(box.top - view.top),
+      Math.abs(boxBottom - view.top),
+      Math.abs(box.top - viewBottom0),
+      Math.abs(boxBottom - viewBottom0),
+    );
     if (
       !inFlow &&
       box.height > 0 &&
-      box.height < MIN_HEIGHT &&
+      visibleHeight < MIN_HEIGHT &&
       box.width > view.width * 0.9 &&
-      (box.top <= view.top + 2 || box.top + box.height >= viewBottom0 - 2)
+      edgeDistance <= 2
     ) {
       return box.top + box.height / 2 < view.top + view.height / 2 ? "top" : "bottom";
     }

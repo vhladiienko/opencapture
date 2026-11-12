@@ -29,6 +29,79 @@ const VP_W = 1000;
 const VP_H = 720;
 const DSF = 1.25;
 
+test("translated toolbar borders do not repeat at capture seams under browser zoom", async () => {
+  const context = await chromium.launchPersistentContext("", {
+    channel: "chromium",
+    headless: true,
+    viewport: null,
+    args: [
+      `--disable-extensions-except=${extensionDist}`,
+      `--load-extension=${extensionDist}`,
+      "--force-device-scale-factor=1.25",
+      "--window-size=2049,1091",
+    ],
+  });
+
+  try {
+    let [worker] = context.serviceWorkers();
+    worker ??= await context.waitForEvent("serviceworker", { timeout: 20_000 });
+    const page = await context.newPage();
+    await page.goto(`${BASE_URL}/devgrid.html`);
+    await page.setContent(`<!doctype html><style>
+      html, body { margin: 0; background: #111115; }
+      main { height: 5000px; width: 720px; margin: auto; background: white; }
+      footer { position: fixed; bottom: 0; left: 0; width: 100%; height: 100px;
+        box-sizing: border-box; transform: translateY(100%);
+        border-top: 1px solid #18181b; background: #111115; }
+    </style><main></main><footer></footer>`);
+
+    const target = await worker.evaluate(async (url) => {
+      const tabs = await chrome.tabs.query({});
+      const tab = tabs.find((candidate) => candidate.url === url);
+      if (!tab?.id) throw new Error(`no tab found for ${url}`);
+      await chrome.tabs.setZoom(tab.id, 0.91);
+      return { tabId: tab.id, windowId: tab.windowId };
+    }, page.url());
+
+    const result = await worker.evaluate(async ({ tabId, windowId }) => {
+      // @ts-expect-error test-only global, see background/index.ts
+      return globalThis.__test.captureFullPage(tabId, windowId);
+    }, target);
+    expect(result.report.slice_count).toBeGreaterThan(1);
+    expect(result.imagesBase64).toHaveLength(1);
+
+    const badRows = await page.evaluate(async (base64) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${base64}`;
+      await image.decode();
+      const canvas = document.createElement("canvas");
+      canvas.width = image.width;
+      canvas.height = image.height;
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(image, 0, 0);
+      const pixels = ctx.getImageData(0, 0, image.width, image.height).data;
+      const rows: number[] = [];
+      for (let y = 0; y < image.height - 2; y++) {
+        const gutter = (y * image.width + 100) * 4;
+        const center = (y * image.width + Math.floor(image.width / 2)) * 4;
+        if (pixels[gutter] !== 17 || pixels[gutter + 1] !== 17 || pixels[gutter + 2] !== 21 ||
+            pixels[center] !== 255 || pixels[center + 1] !== 255 || pixels[center + 2] !== 255) {
+          rows.push(y);
+        }
+      }
+      return rows;
+    }, result.imagesBase64[0]!);
+
+    expect(badRows).toEqual([]);
+    expect(await page.locator("footer").evaluate((el) => ({
+      visibility: el.style.visibility,
+      opacity: el.style.opacity,
+    }))).toEqual({ visibility: "", opacity: "" });
+  } finally {
+    await context.close();
+  }
+});
+
 test("full-page capture is row-exact at a fractional device pixel ratio", async () => {
   const context = await chromium.launchPersistentContext("", {
     channel: "chromium",

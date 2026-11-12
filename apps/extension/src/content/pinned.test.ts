@@ -109,6 +109,22 @@ describe("classifyPinned: viewport-edge hairlines", () => {
     expect(classifyF({ left: 0, top: 1004, width: 2049, height: 1 }, false)).toBe("bottom");
   });
 
+  it.each([
+    [-60, 60, "top"],
+    [-60.3, 60, "top"],
+    [1005, 100, "bottom"],
+    [1005.3, 100, "bottom"],
+  ] as const)("handles an offscreen toolbar at %s with height %s", (top, height, expected) => {
+    expect(classifyF({ left: 0, top, width: 2049, height }, false)).toBe(expected);
+  });
+
+  it("leaves distant offscreen toolbars and in-flow content alone", () => {
+    expect(classifyF({ left: 0, top: -70, width: 2049, height: 60 }, false)).toBeNull();
+    expect(classifyF({ left: 0, top: 1015, width: 2049, height: 100 }, false)).toBeNull();
+    expect(classifyF({ left: 0, top: -60, width: 2049, height: 60 }, true)).toBeNull();
+    expect(classifyF({ left: 600, top: 1005, width: 663, height: 100 }, false)).toBeNull();
+  });
+
   it("leaves a sticky hairline inside the scroller alone", () => {
     expect(classifyF({ left: 0, top: 0, width: 2049, height: 1 }, true)).toBeNull();
   });

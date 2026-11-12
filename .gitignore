@@ -35,3 +35,6 @@ apps/extension/extension-key.pem
 
 # Screenshots pulled from the issue tracker while working a task.
 APP-*-image.png
+
+# graft's local graph cache — regenerable, not committed (run `graft build`).
+/graft/
