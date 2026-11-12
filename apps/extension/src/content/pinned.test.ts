@@ -93,6 +93,32 @@ describe("classifyPinned: guards that hold in both modes", () => {
   }
 });
 
+describe("classifyPinned: viewport-edge hairlines", () => {
+  // A reader's full-width divider line parked under its top bar: shorter than
+  // the size floor, so left alone it is re-photographed into every slice and
+  // a faint line crosses the capture at every seam, one viewport apart.
+  const view: Box = { top: 0, left: 0, width: 2049, height: 1005 };
+  const classifyF = (box: Box, inFlow: boolean, mode: "keep" | "remove" = "keep") =>
+    classifyPinned({ box, view, signature: "", mode, inFlow, isOverlayHost: false });
+
+  it("shows a floating top hairline once, at the top", () => {
+    expect(classifyF({ left: 0, top: 0, width: 2049, height: 1 }, false)).toBe("top");
+  });
+
+  it("shows a floating bottom hairline once, at the bottom", () => {
+    expect(classifyF({ left: 0, top: 1004, width: 2049, height: 1 }, false)).toBe("bottom");
+  });
+
+  it("leaves a sticky hairline inside the scroller alone", () => {
+    expect(classifyF({ left: 0, top: 0, width: 2049, height: 1 }, true)).toBeNull();
+  });
+
+  it("leaves narrow or mid-band slivers alone", () => {
+    expect(classifyF({ left: 600, top: 0, width: 663, height: 1 }, false)).toBeNull();
+    expect(classifyF({ left: 0, top: 500, width: 2049, height: 1 }, false)).toBeNull();
+  });
+});
+
 describe("classifyPinned: where a floating thing lands", () => {
   // Measured on a real feed: the window's own top navigation, which is not
   // part of what scrolls and so counts as floating.
