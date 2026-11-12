@@ -1,0 +1,73 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>rnw-shared-class-overlay</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+      }
+      #outerHeader {
+        height: 80px;
+        background: #111;
+        color: #fff;
+        font: 16px monospace;
+        padding: 10px;
+        box-sizing: border-box;
+      }
+      #scrollBox {
+        height: 500px;
+        width: 100%;
+        overflow-y: auto;
+      }
+      .band {
+        height: 100px;
+        width: 100%;
+        box-sizing: border-box;
+        color: white;
+        font: 14px monospace;
+        padding-top: 4px;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- Models tappytoon.com's reader: a react-native-web app where every
+         View carries one shared base class (there, css-175oi2r). A loading
+         spinner overlay — fixed, outside the scroller, classed only with
+         that base — is correctly classified as a pinned element and hidden,
+         but a rebuild-survival stylesheet rule written from its selector
+         used to be `div.<base>`, which matches the entire application: the
+         capture came back blank. Every element here shares .r-base for the
+         same reason, and the spinner's only class is r-base.
+         The spinner has no id — selectorFor prefers ids, and an id would
+         make the rule unique instead of overmatching. -->
+    <div id="outerHeader" class="r-base">Outer page header — never scrolls, should appear in every band sample</div>
+    <div id="scrollBox" class="r-base">
+      <div id="bands" class="r-base"></div>
+    </div>
+    <div
+      class="r-base"
+      style="position: fixed; top: 252px; left: 352px; width: 96px; height: 96px; background: #333; color: #fff; font: 12px monospace; display: flex; align-items: center; justify-content: center"
+    >
+      spinner
+    </div>
+    <script>
+      // Same deterministic color formula as inner-scroll.html, so shot-qa
+      // band-sample asserts exact RGB per band.
+      const BANDS = 20;
+      const container = document.getElementById("bands");
+      for (let i = 0; i < BANDS; i++) {
+        const r = (i * 53) % 256;
+        const g = (i * 97) % 256;
+        const b = (i * 151) % 256;
+        const div = document.createElement("div");
+        div.className = "band r-base";
+        div.style.backgroundColor = `rgb(${r},${g},${b})`;
+        div.textContent = `band ${i} rgb(${r},${g},${b})`;
+        container.appendChild(div);
+      }
+    </script>
+  </body>
+</html>

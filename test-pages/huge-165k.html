@@ -1,0 +1,12 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>A 165,000px page</title>
+<style>
+  html, body { margin: 0; }
+  #page { background: repeating-linear-gradient(#fff 0 40px, #e6e6e6 40px 80px); }
+</style>
+<div id="page"></div>
+<script>
+  // ~165k css tall: 165 bands x 1000px
+  document.getElementById("page").style.height = "165000px";
+</script>

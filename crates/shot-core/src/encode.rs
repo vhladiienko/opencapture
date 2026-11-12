@@ -42,10 +42,6 @@ pub fn encode_png(segment: &Segment, dpr: f64) -> Result<EncodedImage, StitchErr
     })
 }
 
-pub fn encode_segments(segments: &[Segment], dpr: f64) -> Result<Vec<EncodedImage>, StitchError> {
-    segments.iter().map(|s| encode_png(s, dpr)).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -94,15 +90,4 @@ mod tests {
         assert_eq!(pixels_per_meter(2.0), 7559);
     }
 
-    #[test]
-    fn encode_segments_handles_empty_and_multiple() {
-        assert_eq!(encode_segments(&[], 1.0).unwrap().len(), 0);
-        let segs = vec![
-            solid_segment(2, 2, [0, 0, 0, 255]),
-            solid_segment(2, 2, [255, 255, 255, 255]),
-        ];
-        let encoded = encode_segments(&segs, 1.0).unwrap();
-        assert_eq!(encoded.len(), 2);
-        assert_ne!(encoded[0].png_bytes, encoded[1].png_bytes);
-    }
 }

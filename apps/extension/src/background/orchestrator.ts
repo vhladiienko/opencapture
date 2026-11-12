@@ -220,7 +220,11 @@ export async function captureFullPage(tabId: number, windowId: number): Promise<
   const metrics: PageMetrics = prep.metrics;
   const innerRect = prep.innerScrollRect;
 
-  const targets = shotCore.scrollTargets(metrics.totalHeightCss, metrics.viewportHeightCss) as Float64Array;
+  const targets = shotCore.scrollTargets(
+    metrics.totalHeightCss,
+    metrics.viewportHeightCss,
+    metrics.dpr,
+  ) as Float64Array;
 
   // Built after the first slice, not before: the scale every placement is
   // computed with comes from the bitmap the browser actually returns rather
@@ -447,7 +451,11 @@ export async function getLastCaptureImageCount(): Promise<number> {
 
 // Exercises the wasm module without needing a real tab — used by the E2E
 // "extension loads" smoke test (see background/index.ts's __test hook).
-export async function testScrollTargets(totalHeightCss: number, viewportHeightCss: number): Promise<number[]> {
+export async function testScrollTargets(
+  totalHeightCss: number,
+  viewportHeightCss: number,
+  dpr: number,
+): Promise<number[]> {
   const shotCore = await loadShotCore();
-  return Array.from(shotCore.scrollTargets(totalHeightCss, viewportHeightCss) as Float64Array);
+  return Array.from(shotCore.scrollTargets(totalHeightCss, viewportHeightCss, dpr) as Float64Array);
 }

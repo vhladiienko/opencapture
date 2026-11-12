@@ -86,6 +86,26 @@ export function classifyPinned(opts: {
   const overlay = CONSENT_PATTERN.test(signature) || CHAT_PATTERN.test(signature) || isOverlayHost;
 
   if (!overlay) {
+    // A full-width sliver hugging the top or bottom edge of the viewport —
+    // a reader's divider or glow line under its top bar — is furniture, not
+    // content. The size floor below exists so the sweep never hides something
+    // worth reading, but these lines are shorter than the floor precisely so
+    // they stay subtle on the live page, and left alone each one is
+    // re-photographed into every slice: a faint horizontal line across the
+    // stitched capture at every seam, one viewport apart. Only floating ones:
+    // a sticky sliver inside the scroller travels with the content and is
+    // part of it.
+    const viewBottom0 = view.top + view.height;
+    if (
+      !inFlow &&
+      box.height > 0 &&
+      box.height < MIN_HEIGHT &&
+      box.width > view.width * 0.9 &&
+      (box.top <= view.top + 2 || box.top + box.height >= viewBottom0 - 2)
+    ) {
+      return box.top + box.height / 2 < view.top + view.height / 2 ? "top" : "bottom";
+    }
+
     if (box.width < MIN_WIDTH || box.height < MIN_HEIGHT) return null;
 
     // Must actually intrude on the band being captured.

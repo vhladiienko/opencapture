@@ -680,15 +680,45 @@ if (!(window as unknown as { __opencaptureContentLoaded?: boolean }).__opencaptu
    * usable selector, and the rule covers an element that gets rebuilt. Neither
    * alone was enough — the inline style lost the node, and a selector cannot
    * be written for everything.
+   *
+   * A rule may only be as wide as the inline hiding it backs up. Frameworks
+   * stamp one base class on every element they render — react-native-web
+   * puts `css-175oi2r` on all of them — so a pinned overlay whose only
+   * identity is that class produced the rule `div.css-175oi2r`, which
+   * matched the entire application and photographed every slice blank
+   * (tappytoon.com's reader came back as 114,000px of white). So each
+   * selector is checked against the live DOM before it is written: if it
+   * matches anything that is not already hidden inline, it is dropped. A
+   * rebuilt overlay then waits for the next sweep's inline hide instead,
+   * which costs a frame of exposure on one slice — nothing next to hiding
+   * the page.
    */
   function writeHideRules(): void {
+    const hiddenInline = new Set<HTMLElement>();
     const selectors = new Set<string>();
     for (const p of pinnedElements) {
       if (!p.hidden) continue;
       for (const t of p.targets) {
+        hiddenInline.add(t.el);
         const selector = selectorFor(t.el);
         if (selector) selectors.add(selector);
       }
+    }
+    for (const selector of [...selectors]) {
+      let narrow = true;
+      try {
+        for (const match of document.querySelectorAll(selector)) {
+          if (!hiddenInline.has(match as HTMLElement)) {
+            narrow = false;
+            break;
+          }
+        }
+      } catch {
+        // Unusable selector (an engine may reject some escapes): inline
+        // hiding still covers the element as-is.
+        narrow = false;
+      }
+      if (!narrow) selectors.delete(selector);
     }
     let style = document.getElementById(HIDE_STYLE_ID) as HTMLStyleElement | null;
     if (selectors.size === 0) {
